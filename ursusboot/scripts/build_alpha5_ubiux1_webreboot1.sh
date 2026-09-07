@@ -4,7 +4,7 @@ ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 WORK=${URSUS_BUILD_DIR:-"$ROOT/work/alpha5-ubiux1-webreboot1-rebuild"}
 SDK_BUNDLE="$ROOT/toolchains/openwrt-sdk-r35906/openwrt-sdk-r35906.tar.zst"
 SOURCE_BUNDLE="$ROOT/ursusboot/source/ursusboot-0.1.0-alpha5-UBIUX1-source.tar.zst"
-PATCH="$ROOT/ursusboot/patches/webreboot1/130-webfailsafe-webreboot1.patch"
+PATCH="$ROOT/ursusboot/patches/130-webfailsafe-webreboot1.patch"
 CONFIG="$ROOT/ursusboot/configs/u-boot.FUDAN1.full.config"
 DONOR="$ROOT/payloads/md/ursusboot/ursusboot-md-0.1.0-alpha4-FUDAN1-update.fip"
 OUT="$WORK/out"
