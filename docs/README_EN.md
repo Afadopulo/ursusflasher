@@ -26,9 +26,11 @@
 
 The kit is two things, and they do different jobs.
 
-**UrsusFlasher** runs on your computer. It looks at the state the router is in and picks how to talk to it: the stock firmware's web interface, SSH into an installed OpenWrt, the bootloader's own web page, or — when everything else is gone — USB-UART.
+**UrsusFlasher** runs on your computer and coordinates the procedure. It determines the device state as far as it can actually prove it, picks a permitted route, checks the kit's own files, and runs the checks that the chosen operation specifically needs before anything is transferred or written. The write itself, and some of the final checks, are not done by it but by whichever side owns the device's current state: the native `sysupgrade` in a running OpenWrt, UrsusBoot in Recovery, or a service environment in RAM during emergency recovery.
 
-**UrsusBoot** lives in the router. It is a bootloader with a built-in recovery environment: it can accept an image over the network, verify it and write it. It is what turns "the router does not boot" from a verdict into an ordinary procedure.
+**UrsusBoot** is a bootloader and a self-contained recovery environment inside the router. It determines the flash layout available to it, accepts and classifies images, applies its own device-side checks, performs permitted NAND operations and verifies the result of a write. UrsusFlasher drives it over an HTTP API, but UrsusBoot is not a passive writer: some of the decisions are made in the router, not on the computer.
+
+Recovery over USB-UART and the Airoha BootROM is a separate operator path. It requires a physical connection to the board and is chosen deliberately; it is not an automatic continuation of a failed ONE-CLICK.
 
 No internet is needed while flashing — every image is in the kit.
 
@@ -46,11 +48,11 @@ That is a router with OpenWrt already installed: the layout is `OPENWRT_UBI`, wh
 
 ## Where UrsusBoot came from
 
-At first there was none. Early UrsusFlasher ran on top of `tcboot` — a bootloader that arrived from the vendor as a finished binary. It worked, and that was confirmed on real hardware, but no sources ever turned up with it.
+At first there was none. Early UrsusFlasher ran on top of `tcboot` — a bootloader available only as a binary, with no reproducible sources. It worked on real hardware, but it could not be rebuilt, nor could anyone check what was actually inside it.
 
 So the direction changed: the bootloader is now built from current OpenWrt/Airoha U-Boot with a WebFailsafe interface and a policy layer of its own. That is UrsusBoot. `tcboot` remains in the history as a reference for behaviour — it was compared against, but it is no longer in the kit.
 
-The layout changed with it. Early experiments moved the start of UBI to make room for the bootloader, and that had a price: the official OpenWrt image no longer fit, and its flash map had to be patched on the fly. The layout now matches what OpenWrt expects for this board:
+The layout changed with it. Early experiments moved the start of UBI to make room for the bootloader, and that had a price: an ordinary UBI OpenWrt image no longer fit, and its flash map had to be patched on the fly. The layout now matches what OpenWrt expects for this board:
 
 ```text
 0x00000000..0x0001ffff   BL2
@@ -61,7 +63,7 @@ The layout changed with it. Early experiments moved the start of UBI to make roo
                            rootfs_data
 ```
 
-Because of that the official `*-ubi-*` OpenWrt image installs as it is, with no rework. And the bootloader is stored not in a separate slice of raw flash but in the `fip` volume inside UBI — where the board's own boot chain looks for it.
+Because of that an ordinary UBI sysupgrade for this profile installs as it is, with no rework. And the bootloader is stored not in a separate slice of raw flash but in the `fip` volume inside UBI. That a working boot chain exists on this layout is confirmed on hardware; the mechanism by which BL2 locates `fip` was never separately established in this project, and we will not claim more here than "this layout boots".
 
 ### This is ordinary U-Boot, not something homegrown
 
@@ -73,7 +75,7 @@ Which carries a warning: the console does not restrain you. The checks and confi
 
 **What is available.** The build enables 67 U-Boot commands — MTD, UBI and UBIFS, networking with `tftpboot`, `ping`, `dhcp`, `wget`, `mii`, `mdio`, the full environment set, `bootm`, `fdt`, `gpio`, `led`, `button`, `hash`, `crc32`, `lzma`/`unzip` decompression.
 
-**What is disabled.** Another 93 command options are built without support, and that is worth stating plainly rather than waving it off as "almost nothing was cut". Gone are filesystems this path never touches (`ext2/4`, `fat`, `squashfs`, `btrfs`, `zfs`), buses and media the board does not have (`pci`, `ide`, `sf`/`spi`, `onenand`), and some debugging conveniences (`memtest`, `md5sum`, `sha1sum`, `date`, `bootmenu`, `history`, `cat`, `xxd`, `nfs`). Everything needed to boot, reach the network, work with NAND and recover is present.
+**What is disabled.** Another 93 command options are built without support, and that is worth stating plainly rather than waving it off as "almost nothing was cut". Gone are filesystems this path never touches (`ext2/4`, `fat`, `squashfs`, `btrfs`, `zfs`), buses and media the board does not have (`pci`, `ide`, `sf`/`spi`, `onenand`), and some debugging conveniences (`memtest`, `md5sum`, `sha1sum`, `date`, `bootmenu`, `history`, `cat`, `xxd`, `nfs`). The build includes the commands the recovery scenarios described here require; a scenario this project has not described may run into a command that is absent.
 
 ---
 
@@ -82,13 +84,15 @@ Which carries a warning: the console does not restrain you. The checks and confi
 **It does:**
 
 - accept an OpenWrt firmware image (UBI or factory) over the network — through its own web page, or over TFTP if that page is not answering;
-- verify the image before writing: type, size, checksum;
+- verify that the upload completed, classify the image and check it against what the current layout permits — with its own checks, on the device side;
 - repartition when the image requires it, write, and **read back**, comparing what landed against what should have;
 - come up on the Reset button even when the installed system is gone (hold Reset 10+ seconds **after** power-on, until the red LED comes on);
 - determine the router's current layout and the class of the uploaded image, and report both;
 - work on its own: installing or reinstalling OpenWrt needs neither a working system on the router nor UrsusFlasher on a PC — its own web page is enough.
 
-It survives a `sysupgrade` run from inside OpenWrt: that writes `fit` and `rootfs_data` and leaves the `fip` volume alone. And it can perform a sysupgrade itself. Two routes to the same result, not one instead of the other.
+It survives a `sysupgrade` run from inside OpenWrt: that writes `fit` and `rootfs_data` and leaves the `fip` volume alone.
+
+OpenWrt can be installed by two different routes, and they are two different mechanisms rather than two names for one. In a running OpenWrt the write is done by the native `sysupgrade`, with its own validation (`sysupgrade -T`) and its own transaction boundaries. In Recovery there is no Linux and no `sysupgrade` at all: UrsusBoot's own installer runs there, with different checks and different postconditions. The result looks alike; the guarantees are not.
 
 **It does not:**
 
@@ -126,6 +130,8 @@ The way back is still closed: you cannot return from UBI to the factory layout. 
 **Environment detection got stricter.** OpenWrt is recognised by root SSH, Nokia stock by Web and Telnet. An open Telnet port alone is no longer treated as proof of stock firmware, and if the environment is not identified unambiguously the run stops instead of guessing.
 
 The bundled OpenWrt images are the same as in 0.2.55 — the bootloader and the logic around it are what changed.
+
+**A known bug in the Recovery reboot button.** In production alpha5-UBIUX1 a manual reboot from the web interface happens only after the browser closes the connection: a browser that holds it open leaves the router powered on. A fix is built as `0.1.0-alpha5-UBIUX1-WEBREBOOT1` and sits in `payloads/md/ursusboot/`, but it is **not yet verified on hardware**, so production remains alpha5-UBIUX1. The acceptance procedure is in [`WEBREBOOT1_TEST_RU.md`](WEBREBOOT1_TEST_RU.md).
 
 ---
 
@@ -166,7 +172,7 @@ ONE-CLICK does not assume the router is in one particular state. It looks first 
 
 **UrsusBoot Recovery is already open.** Then the bootloader does not need reinstalling: the image is transferred in chunks, verified by the bootloader and written.
 
-One rule holds throughout: **the bootloader write does not begin until a verified backup exists.**
+The backup rule applies to the route where a backup is possible at all: **leaving Nokia stock firmware does not begin until a full copy has been taken and verified** — there is still something to lose there, and somewhere to read it from. Updating an already-installed UrsusBoot, and reinstalling OpenWrt from Recovery, are different transactions with different preconditions: they do not touch factory data, and the flasher will not demand a fresh copy for them.
 
 ### ONE-CLICK always installs the UBI layout
 
@@ -186,11 +192,13 @@ Mind the one-way rule from the table above: you can move to the factory layout f
 | Router state | Commands go over | Files go over |
 |---|---|---|
 | Nokia stock | HTTP/Web + Telnet | TFTP |
-| OpenWrt in flash | SSH | SCP |
-| OpenWrt from RAM | SSH | SCP |
+| OpenWrt in flash | SSH | binary stream over SSH |
+| OpenWrt from RAM | SSH | binary stream over SSH, SCP as fallback |
 | UrsusBoot Recovery | HTTP API | HTTP in chunks |
 | UrsusBoot Recovery, fallback | UrsusBoot console | TFTP |
 | Router does not boot | USB-UART → Airoha BootROM | XMODEM |
+
+Transfer into an installed OpenWrt goes as a single binary stream over the already-verified SSH session: the router side needs only a POSIX shell, `cat`, `mv`, `wc` and `sha256sum`. That is deliberate — a stripped-down OpenWrt build may have no `scp`, no `sftp` and no `base64`. SCP remains as a fallback for the RAM service environment when `nokia-tftp` and `nc` are unavailable.
 
 USB-UART is connected by **TX, RX and GND** only. VCC is not connected to the board.
 
@@ -239,9 +247,16 @@ Items **6** and **9** can be selected in this build but not executed: they say p
 
 ## What is checked before a write
 
-The work is split into three independent things: determine the state, transfer the file, write. Checks stand between them.
+The work is split into three independent things: determine the state, transfer the file, write. Checks stand between them — and they are not all performed by the same side. It is worth knowing who is responsible for what, because different routes carry different guarantees.
 
-Verified are the kit files, the model and SoC, the current layout, the specific write target, the state of the backup, and — on the router side already — the size and hash of the transferred file.
+| Who checks | What exactly |
+|---|---|
+| **UrsusFlasher** (the PC) | contents and SHA256 of the kit files; probing of device state and environment; the checks the chosen operation needs; identity of the transport; your confirmation |
+| **Installed OpenWrt** | SHA256 of the transferred file on the router itself; the native image-compatibility check `sysupgrade -T`; the write itself — `sysupgrade` |
+| **UrsusBoot Recovery** | upload completeness; image classification; whether the target and layout are permitted; the NAND operation; full readback and device-side comparison |
+| **BootROM / RAM environment** | payloads pinned on the PC; XMODEM transport; explicit checks of the raw write target; readback and comparison |
+
+The key point: whether an image is compatible with an installed OpenWrt is decided not by UrsusFlasher but by the native `sysupgrade -T` on the router. In Recovery that decision belongs to UrsusBoot. UrsusFlasher proves what it can prove from its own side, and does not present someone else's checks as its own.
 
 The background diagnostics in EXPERT neither permit nor forbid anything; they are informational. Whatever an operation actually needs, it checks itself, after you have chosen it. The root password, if one is needed, is asked for by the system OpenSSH; UrsusFlasher does not store it and installs no keys on the router.
 
